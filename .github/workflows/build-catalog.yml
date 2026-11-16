@@ -1,0 +1,51 @@
+# Builds "Bills by Policy Area": every bill in the current Congress, from the Congress.gov API (fetch-catalog.mjs).
+# Runs every hour. The first catalog takes about a day of hourly runs. After that, a run does nothing until a day has
+# passed, then picks up the bills Congress.gov changed. Only files that changed are uploaded to Neocities.
+# It skips 12:00 to 13:59 UTC, when "Update site data" runs, so the two don't share an hour of the API's 5,000-lookup limit.
+# Uses the same secrets as "Update site data": NEOCITIES_API_TOKEN and CONGRESS_API_KEY.
+# Optional: a second free key saved as CONGRESS_CATALOG_KEY gives this workflow its own hourly allowance.
+name: Build bill catalog
+
+on:
+  schedule:
+    - cron: "41 0-11,14-23 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: bill-catalog
+  cancel-in-progress: false
+
+env:
+  SITE_URL: https://foundingfathers.neocities.org
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build the catalog
+        env:
+          CONGRESS_CATALOG_KEY: ${{ secrets.CONGRESS_CATALOG_KEY }}
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+        run: node fetch-catalog.mjs out
+
+      - name: Upload changed files to Neocities
+        env:
+          NEOCITIES_API_TOKEN: ${{ secrets.NEOCITIES_API_TOKEN }}
+        run: |
+          cd out
+          mapfile -t files < <(grep -v '^$' upload.txt)
+          echo "${#files[@]} files to upload"
+          # 20 files a request. state.json is last in the list, so if an upload fails the next run redoes this run's work.
+          for ((i=0; i<${#files[@]}; i+=20)); do
+            args=()
+            for f in "${files[@]:i:20}"; do args+=(-F "$f=@$f"); done
+            curl -fsS --retry 3 --retry-delay 5 -H "Authorization: Bearer $NEOCITIES_API_TOKEN" "${args[@]}" https://neocities.org/api/upload > /dev/null
+            echo "Uploaded $((i + ${#args[@]} / 2)) of ${#files[@]}"
+          done
