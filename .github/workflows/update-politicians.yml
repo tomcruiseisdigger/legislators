@@ -1,8 +1,12 @@
-# Builds legislators.js from the congress-legislators dataset and uploads it to Neocities.
-# Reads bills.js and politicians.js from the live site, so no site files are kept in this repository.
+# Updates the site's live data and uploads it to Neocities:
+#   billlive.js    from the Congress.gov API (fetch-congress.mjs)
+#   legislators.js from the congress-legislators dataset (fetch-legislators.mjs)
+# Reads billmeta.js, bills.js, politicians.js and the last billlive.js from the live site, so no site files are kept here.
 # Runs every morning, and whenever you press "Run workflow" on the Actions tab.
-# Needs one secret: NEOCITIES_API_TOKEN (Settings > Secrets and variables > Actions).
-name: Update politicians
+# Needs two secrets (Settings > Secrets and variables > Actions):
+#   NEOCITIES_API_TOKEN  your Neocities API key
+#   CONGRESS_API_KEY     a free key from https://api.congress.gov/sign-up/
+name: Update site data
 
 on:
   schedule:
@@ -10,11 +14,12 @@ on:
   workflow_dispatch:         # adds a "Run workflow" button
 
 env:
-  SITE_URL: https://foundingfathers.neocities.org   # where bills.js and politicians.js are read from
+  SITE_URL: https://foundingfathers.neocities.org   # where the site's files are read from
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -22,19 +27,40 @@ jobs:
         with:
           node-version: 20
 
-      - name: Download bills.js and politicians.js from the site
+      - name: Download the site files the scripts read
         run: |
           mkdir -p site
-          curl -fsSL "$SITE_URL/bills.js" -o site/bills.js
-          curl -fsSL "$SITE_URL/politicians.js" -o site/politicians.js
+          for f in billmeta.js bills.js politicians.js; do
+            curl -fsSL "$SITE_URL/$f" -o "site/$f"
+          done
+          # The last billlive.js lets a failed lookup keep its old record. It's fine if it isn't there yet.
+          curl -fsSL "$SITE_URL/billlive.js" -o site/billlive.js || rm -f site/billlive.js
+
+      - name: Build billlive.js from Congress.gov
+        id: congress
+        continue-on-error: true
+        env:
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+        run: node fetch-congress.mjs site
 
       - name: Build legislators.js
+        id: legislators
+        continue-on-error: true
         run: node fetch-legislators.mjs site
 
-      - name: Upload legislators.js to Neocities
+      - name: Upload to Neocities
         env:
           NEOCITIES_API_TOKEN: ${{ secrets.NEOCITIES_API_TOKEN }}
         run: |
-          curl -fsS -H "Authorization: Bearer $NEOCITIES_API_TOKEN" \
-            -F "legislators.js=@site/legislators.js" \
-            https://neocities.org/api/upload
+          args=()
+          if [ "${{ steps.congress.outcome }}" = "success" ]; then args+=(-F "billlive.js=@site/billlive.js"); fi
+          if [ "${{ steps.legislators.outcome }}" = "success" ]; then args+=(-F "legislators.js=@site/legislators.js"); fi
+          if [ ${#args[@]} -eq 0 ]; then echo "Both builds failed, so nothing was uploaded."; exit 1; fi
+          curl -fsS -H "Authorization: Bearer $NEOCITIES_API_TOKEN" "${args[@]}" https://neocities.org/api/upload
+
+      - name: Report a failed build
+        if: steps.congress.outcome == 'failure' || steps.legislators.outcome == 'failure'
+        run: |
+          echo "Congress.gov build: ${{ steps.congress.outcome }}. Legislators build: ${{ steps.legislators.outcome }}."
+          echo "Whatever built was uploaded; the other file on Neocities was left as it was."
+          exit 1
