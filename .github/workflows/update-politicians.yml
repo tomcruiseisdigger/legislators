@@ -1,0 +1,40 @@
+# Builds legislators.js from the congress-legislators dataset and uploads it to Neocities.
+# Reads bills.js and politicians.js from the live site, so no site files are kept in this repository.
+# Runs every morning, and whenever you press "Run workflow" on the Actions tab.
+# Needs one secret: NEOCITIES_API_TOKEN (Settings > Secrets and variables > Actions).
+name: Update politicians
+
+on:
+  schedule:
+    - cron: "17 13 * * *"   # 6:17 am Arizona time, every day
+  workflow_dispatch:         # adds a "Run workflow" button
+
+env:
+  SITE_URL: https://foundingfathers.neocities.org   # where bills.js and politicians.js are read from
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download bills.js and politicians.js from the site
+        run: |
+          mkdir -p site
+          curl -fsSL "$SITE_URL/bills.js" -o site/bills.js
+          curl -fsSL "$SITE_URL/politicians.js" -o site/politicians.js
+
+      - name: Build legislators.js
+        run: node fetch-legislators.mjs site
+
+      - name: Upload legislators.js to Neocities
+        env:
+          NEOCITIES_API_TOKEN: ${{ secrets.NEOCITIES_API_TOKEN }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $NEOCITIES_API_TOKEN" \
+            -F "legislators.js=@site/legislators.js" \
+            https://neocities.org/api/upload
