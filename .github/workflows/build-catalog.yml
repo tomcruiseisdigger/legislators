@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: bill-catalog
+  group: bill-catalog-2
   cancel-in-progress: false
 
 env:
