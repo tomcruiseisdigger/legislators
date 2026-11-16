@@ -17,6 +17,7 @@
      catalog/<C>/area-<slug>.json       one per policy area: a row for each bill, newest action first
      catalog/<C>/d/<type>-<n>.json      full details (summary, actions, cosponsors, related bills, text), 100 bill numbers a file
      catalog/<C>/sponsors/<id>.json     each member's sponsored bills
+     catalog/<C>/sponsor-counts.json    every member's count of sponsored bills, for the Politicians pages
      catalog/<C>/state.json             what's been fetched, so the next run carries on
      upload.txt                         the files that changed this run, for the workflow to upload
    Each run first lists the bills Congress.gov changed since the last run, then fetches details for bills that are new or
@@ -220,6 +221,8 @@ put(`${base}/index.json`, { congress: C, fetched: NOW, total: keys.length, detai
 const spons = {};
 for (const k of keys) if (B[k].sp && B[k].sp[1]) (spons[B[k].sp[1]] = spons[B[k].sp[1]] || []).push(k);
 for (const [id, ks] of Object.entries(spons)) put(`${base}/sponsors/${id}.json`, ks.sort(byLatest).map(k => [k, B[k].title || "", B[k].st, (B[k].la || [])[0] || null]));
+/* Everyone's counts in one small file, for the Politicians pages: id -> [sponsored, passed a chamber, became law]. */
+put(`${base}/sponsor-counts.json`, Object.fromEntries(Object.entries(spons).map(([id, ks]) => [id, [ks.length, ks.filter(k => B[k].st >= 2).length, ks.filter(k => B[k].st === 7).length]])));
 const cong = (await readSite("catalog/congresses.json")) || {};
 cong[C] = { fetched: NOW, total: keys.length, detailed: nDetailed };
 put("catalog/congresses.json", cong);
