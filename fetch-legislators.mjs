@@ -151,6 +151,7 @@ function build(id) {
   if (last.caucus && last.caucus !== last.party) o.caucus = pc(last.caucus);
   if (last.type === "rep" && last.district != null) o.dist = last.district;
   if (cur) o.cur = 1;
+  if (r.id.lis) o.lis = r.id.lis; /* Senate.gov's member ID, used to match Senate roll call votes */
   return o;
 }
 const include = new Set(Object.values(names));
@@ -171,7 +172,7 @@ const head = { fetched: new Date().toISOString(), source: "https://github.com/un
 const out = `/* legislators.js, written by fetch-legislators.mjs. Don't edit it by hand: it's replaced on every run.
    Notes, exit reasons and party overrides go in politicians.js.
    Source: the congress-legislators dataset (public domain), ${head.source}
-   people: bioguide ID -> {n: name shown, st, party, caucus (if it differs), dist (House district, 0 = at-large), cur (1 if serving),
+   people: bioguide ID -> {n: name shown, st, party, caucus (if it differs), dist (House district, 0 = at-large), cur (1 if serving), lis (Senate ID),
      terms: [[chamber, from, to, party]], consecutive terms merged}
    names: each name used in politicians.js or bills.js -> bioguide ID. problems: names that didn't match, and why. */
 const LEGISLATORS = {
