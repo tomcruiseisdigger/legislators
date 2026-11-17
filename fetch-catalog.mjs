@@ -29,7 +29,8 @@
    CBO figures: for a bill with a CBO cost estimate, the run picks the estimate that matches the bill (see pickEstimate),
    reads the summary table on CBO's page, and keeps direct spending, revenues, the deficit change and spending subject to
    appropriation. Those set the Spending and Revenue marks on the site. An estimate that can't be matched cleanly gets no
-   marks and a "check" note instead. cbo-overrides.json, at the top of the site next to index.html, fixes the rare case the
+   marks and a "check" note instead. If CBO's page can't be read, the note and the run's log say why (the HTTP status or
+   network error). cbo-overrides.json, at the top of the site next to index.html, fixes the rare case the
    rules get wrong. For each Congress, give a bill key (hr1234, s55, ...) one of:
      {"use": "https://www.cbo.gov/publication/61234"}   use this estimate, even one Congress.gov doesn't list
      {"skip": ["https://www.cbo.gov/publication/60000"]} never use these estimates for this bill
@@ -223,22 +224,30 @@ function versionCheck(p, d, actions) {
   return `CBO's estimate covers the version "${p.ver}", but ${d.label}'s Congress.gov actions show nothing near that date.`;
 }
 let cboRead = 0;
+/* Why CBO page reads failed this run (reason -> count), and a few of them printed as they happen, so the log shows the cause. */
+const cboWhy = {}, cboWarned = new Set();
+const warnCbo = (url, msg) => { if (cboWarned.size < 5 || cboWarned.has(url)) { cboWarned.add(url); console.warn(`CBO page ${url}: ${msg}`); } };
 async function getCboPage(url, pages) {
   const hit = pages[url]; if (hit && hit.v === PARSE_V) return hit;
   if (cboRead >= CBO_MAX) return null;
   cboRead++;
-  let html = null;
+  let html = null, why = "";
   if (mock) html = await mock("cbo", { url });
   else for (let t = 1; t <= 3; t++) {
     try {
       const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html" }, redirect: "follow" });
       if (res.ok) { html = await res.text(); break; }
+      why = `HTTP ${res.status}`;
+      warnCbo(url, `${why} on try ${t} (server: ${res.headers.get("server") || "unknown"}; content-type: ${res.headers.get("content-type") || "unknown"})`);
       if (res.status === 404 || (res.status < 500 && res.status !== 429)) break;
-    } catch (e) { /* network trouble: try again */ }
+    } catch (e) {
+      why = `network error: ${(e.cause && (e.cause.code || e.cause.message)) || e.message}`;
+      warnCbo(url, `${why} on try ${t}`);
+    }
     await sleep(3000 * t);
   }
   if (!mock) await sleep(400); /* go easy on cbo.gov */
-  if (html == null) return { v: PARSE_V, err: true }; /* not kept, so a later run tries again */
+  if (html == null) { why = why || "no response"; cboWhy[why] = (cboWhy[why] || 0) + 1; return { v: PARSE_V, err: true, why }; } /* not kept, so a later run tries again */
   const p = { v: PARSE_V, at: TODAY, ...parseCbo(html) }; pages[url] = p; return p;
 }
 
@@ -300,7 +309,7 @@ async function readFiscal(k, d, actions, titleList) {
   if (!pk.est) { d.fiscal = { flag: 1, why: pk.why }; set([null, null, null, null, 1], [null, null, pk.why]); return; }
   const p = await getCboPage(pk.est.url, PAGES);
   if (!p) return "later";
-  if (p.err) { const why = "CBO's page couldn't be read on the last try. The next run tries again."; d.fiscal = { flag: 2, why, url: pk.est.url, title: pk.est.title, date: pk.est.date }; set([null, null, null, null, 2], [pk.est.url, pk.est.date, why]); b.ft = TODAY; return; }
+  if (p.err) { const why = `CBO's page couldn't be read on the last try (${p.why || "no reason recorded"}). The next run tries again.`; d.fiscal = { flag: 2, why, url: pk.est.url, title: pk.est.title, date: pk.est.date }; set([null, null, null, null, 2], [pk.est.url, pk.est.date, why]); b.ft = TODAY; return; }
   let why = pk.pinned ? "" : versionCheck(p, d, actions || []);
   if (!why && p.noTable) why = "CBO's page has no standard summary table, so no marks were set. Open the estimate to see its figures.";
   const flag = why ? 1 : 0, date = pk.est.date || null;
@@ -426,3 +435,5 @@ await fs.writeFile(path.join(outDir, "upload.txt"), upload.join("\n") + "\n");
 const left = keys.filter(k => !B[k].d || B[k].d !== B[k].u).length;
 console.log(`${ord(C)} Congress: ${keys.length} bills, ${nDetailed} with details. Fetched ${done} this run${failed ? `, ${failed} failed` : ""}; ${left} still to fetch. ${calls} lookups. ${upload.length} files to upload.`);
 console.log(`CBO: ${nCbo} bills with an estimate, ${nRead} read (${nChecks} to check). ${cboRead} CBO pages read this run, ${fixed} older bills caught up${fiscalLeft ? `, ${fiscalLeft} left for the next run` : ""}.`);
+const cboFails = Object.entries(cboWhy);
+if (cboFails.length) console.log(`CBO pages that couldn't be read this run: ${cboFails.map(([w, c]) => `${w} x${c}`).join(", ")}.`);
