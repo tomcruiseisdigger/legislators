@@ -4,6 +4,8 @@
 # It skips 12:00 to 13:59 UTC, when "Update site data" runs, so the two don't share an hour of the API's 5,000-lookup limit.
 # Uses the same secrets as "Update site data": NEOCITIES_API_TOKEN and CONGRESS_API_KEY.
 # Optional: a second free key saved as CONGRESS_CATALOG_KEY gives this workflow its own hourly allowance.
+# CBO's website refuses the build's requests (HTTP 403), so --no-cbo pauses reading CBO's pages. Bills with an estimate link to it
+# and show "CBO estimate: figures not read". Take --no-cbo out of the "Build the catalog" step to start reading again.
 name: Build bill catalog
 
 on:
@@ -33,7 +35,7 @@ jobs:
         env:
           CONGRESS_CATALOG_KEY: ${{ secrets.CONGRESS_CATALOG_KEY }}
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
-        run: node fetch-catalog.mjs out
+        run: node fetch-catalog.mjs out --no-cbo
 
       - name: Upload changed files to Neocities
         env:
