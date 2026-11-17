@@ -10,6 +10,8 @@
      --budget <n>       most API lookups this run (default 4000; the API allows 5,000 an hour per key)
      --minutes <n>      stop starting new bills after this many minutes (default 45)
      --cbo-max <n>      most CBO pages to read this run (default 300)
+     --no-cbo           pause reading CBO's pages. Bills with an estimate show "CBO estimate: figures not read" and a link to the
+                        estimate; figures already read stay. Take the flag out to start reading again.
      --congress <n>     build a Congress other than the current one
      --force            check for changes even if the catalog was checked less than a day ago
    Writes into outDir (default catalog-out):
@@ -51,6 +53,7 @@ const flagged = new Set(); ["--site-dir", "--mock", "--budget", "--minutes", "--
 const outDir = args.filter((a, i) => !flagged.has(i) && !a.startsWith("--"))[0] || "catalog-out";
 const siteDir = opt("--site-dir", null), mockFile = opt("--mock", null);
 const BUDGET = +opt("--budget", 4000), MINUTES = +opt("--minutes", 45), CBO_MAX = +opt("--cbo-max", 300);
+const CBO_ON = !args.includes("--no-cbo"); /* false = CBO's pages aren't read; see readFiscal */
 const START = Date.now(), NOW = new Date().toISOString().replace(/\.\d+Z$/, "Z"), TODAY = NOW.slice(0, 10);
 let cy = +TODAY.slice(0, 4); if (`${cy}-01-03` > TODAY) cy--;
 const C = +opt("--congress", Math.floor((cy - 1789) / 2) + 1);
@@ -141,7 +144,8 @@ const hash = s => crypto.createHash("sha1").update(s).digest("hex").slice(0, 16)
 /* ---- CBO cost estimates ----
    PARSE_V: bump it when the reading rules change, and every bill with an estimate is read again on the next runs. */
 const PARSE_V = 1;
-const UA = `FoundingFathers.earth bill catalog${SITE_URL ? ` (${SITE_URL})` : ""}`;
+const PAUSED_WHY = "This site isn't reading CBO's figures right now, so no spending or revenue marks are shown. The estimate is linked on this page.";
+const UA =`FoundingFathers.earth bill catalog${SITE_URL ? ` (${SITE_URL})` : ""}`;
 const MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
 const MONTH_RE = "(January|February|March|April|May|June|July|August|September|October|November|December) (\\d{1,2}), (\\d{4})";
 const isoOf = s => { const m = String(s || "").match(new RegExp(MONTH_RE, "i")); return m ? `${m[3]}-${String(MONTHS.indexOf(m[1].toLowerCase()) + 1).padStart(2, "0")}-${m[2].padStart(2, "0")}` : null; };
@@ -265,6 +269,14 @@ function needsFiscal(k) {
   const b = B[k]; if (!b || !b.d) return false;
   const want = b.cbo || (OVR[k] && OVR[k].use);
   if (!want) return !!b.f;
+  if (!CBO_ON) { /* paused: only mark bills that have no figures yet; figures already read stay as they are */
+    const f = b.f, none = !!(OVR[k] && OVR[k].none), changed = ovOK && b.fo !== ovHash(k);
+    if (!f) return true;
+    if (f[4] === 3) return !none || changed; /* turned off by hand: still so, unless the entry changed or was removed */
+    if (f[4] === 2) return b.fz !== 1;       /* a failed read becomes "figures not read" */
+    return none && changed;                  /* marks shown (0) or "check" (1): keep, unless turned off by hand */
+  }
+  if (b.fz) return true; /* paused before: read for real now */
   if (b.fp !== PARSE_V) return true;
   if (ovOK && b.fo !== ovHash(k)) return true;
   return !!(b.f && b.f[4] === 2 && b.ft !== TODAY);
@@ -302,9 +314,13 @@ function loadChunk(name) { if (!chunks.has(name)) chunks.set(name, readSite(`${b
    Returns "later" when this run has read its share of CBO pages; the bill is read on the next run. */
 async function readFiscal(k, d, actions, titleList) {
   const ov = OVR[k] || null, b = B[k];
-  const set = (f, fm) => { b.f = f; b.fm = fm; b.fp = PARSE_V; if (ovOK) b.fo = ovHash(k); };
+  const set = (f, fm) => { b.f = f; b.fm = fm; b.fp = PARSE_V; b.fz = 0; if (ovOK) b.fo = ovHash(k); };
   if (!(d.cbo || []).length && !(ov && ov.use)) { delete d.fiscal; set(null, null); return; }
   if (ov && ov.none) { const why = ov.why || "Marks turned off by hand in cbo-overrides.json."; d.fiscal = { flag: 3, why }; set([null, null, null, null, 3], [null, null, why]); return; }
+  if (!CBO_ON) { /* paused: no CBO page is read. Figures or a "check" note already there stay. Otherwise flag 2, marked fz so it's read once reading resumes. */
+    if (b.f && (b.f[4] === 0 || b.f[4] === 1)) { const old = (await loadChunk(chunkOf(k)))[k]; if (old && old.fiscal) d.fiscal = old.fiscal; return; }
+    d.fiscal = { flag: 2, why: PAUSED_WHY }; set([null, null, null, null, 2], [null, null, PAUSED_WHY]); b.fz = 1; return;
+  }
   const pk = pickEstimate(k, d.cbo || [], { display: d.title, short: (titleList || []).filter(x => /short/i.test(x.titleType || "")).map(x => ent(x.title)) }, ov);
   if (!pk.est) { d.fiscal = { flag: 1, why: pk.why }; set([null, null, null, null, 1], [null, null, pk.why]); return; }
   const p = await getCboPage(pk.est.url, PAGES);
@@ -350,7 +366,7 @@ async function fetchDetail(k) {
     bp: parties.has("D") && parties.has("R") ? 1 : 0, cbo: d.cbo.length ? 1 : 0, law: d.laws.join(" "), d: B[k].u || NOW });
   /* CBO figures. Titles are only looked up for bills with an estimate to match. */
   const ov = OVR[k] || {};
-  const titles = d.cbo.length && !ov.use && !ov.none ? await apiAll(p + "/titles", "titles", {}, 1) : [];
+  const titles = CBO_ON && d.cbo.length && !ov.use && !ov.none ? await apiAll(p + "/titles", "titles", {}, 1) : [];
   if (await readFiscal(k, d, actions, titles) !== "later") fiscalDone.add(k);
   else { B[k].fp = null; const old = (await loadChunk(chunkOf(k)))[k]; if (old && old.fiscal) d.fiscal = old.fiscal; } /* keep the last figures until it's read again on the next run */
   const name = chunkOf(k), chunk = await loadChunk(name);
@@ -377,7 +393,7 @@ await pool(fiscalTodo, 2, async k => {
     const name = chunkOf(k), chunk = await loadChunk(name), d = chunk[k];
     if (!d) { B[k].d = null; return; } /* details are missing: fetch them again on the next run */
     const [t, n] = splitKey(k), p = `/bill/${C}/${t}/${n}`, ov = OVR[k] || {};
-    const needApi = (d.cbo || []).length && !ov.use && !ov.none;
+    const needApi = CBO_ON && (d.cbo || []).length && !ov.use && !ov.none;
     const actions = needApi ? await apiAll(p + "/actions", "actions", {}, 2) : [];
     const titles = needApi ? await apiAll(p + "/titles", "titles", {}, 1) : [];
     if (await readFiscal(k, d, actions, titles) === "later") { fiscalLeft++; return; }
@@ -408,7 +424,7 @@ put(`${base}/index.json`, { congress: C, fetched: NOW, total: keys.length, detai
 /* fiscal.json: key -> [direct spending, revenues, deficit, subject to appropriation, flag, estimate URL, estimate date, note]. */
 const fiscal = {};
 for (const k of keys) if (B[k].d && B[k].f) fiscal[k] = [...B[k].f, ...(B[k].fm || [null, null, ""])];
-const nCbo = keys.filter(k => B[k].d && B[k].cbo).length, nRead = Object.keys(fiscal).length, nChecks = Object.values(fiscal).filter(f => f[4] === 1).length;
+const nCbo = keys.filter(k => B[k].d && B[k].cbo).length, nRead = Object.values(fiscal).filter(f => f[4] === 0 || f[4] === 1).length, nChecks = Object.values(fiscal).filter(f => f[4] === 1).length;
 put(`${base}/fiscal.json`, { congress: C, v: PARSE_V, fetched: NOW, withEstimate: nCbo, bills: fiscal });
 const spons = {};
 for (const k of keys) if (B[k].sp && B[k].sp[1]) (spons[B[k].sp[1]] = spons[B[k].sp[1]] || []).push(k);
@@ -435,5 +451,6 @@ await fs.writeFile(path.join(outDir, "upload.txt"), upload.join("\n") + "\n");
 const left = keys.filter(k => !B[k].d || B[k].d !== B[k].u).length;
 console.log(`${ord(C)} Congress: ${keys.length} bills, ${nDetailed} with details. Fetched ${done} this run${failed ? `, ${failed} failed` : ""}; ${left} still to fetch. ${calls} lookups. ${upload.length} files to upload.`);
 console.log(`CBO: ${nCbo} bills with an estimate, ${nRead} read (${nChecks} to check). ${cboRead} CBO pages read this run, ${fixed} older bills caught up${fiscalLeft ? `, ${fiscalLeft} left for the next run` : ""}.`);
+if (!CBO_ON) console.log(`CBO reading is paused (--no-cbo): ${Object.values(fiscal).filter(f => f[4] === 2).length} bills show "CBO estimate: figures not read". Take the flag out of the workflow to start reading again.`);
 const cboFails = Object.entries(cboWhy);
 if (cboFails.length) console.log(`CBO pages that couldn't be read this run: ${cboFails.map(([w, c]) => `${w} x${c}`).join(", ")}.`);
